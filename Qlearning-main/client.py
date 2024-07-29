@@ -3,19 +3,19 @@ import numpy as np
 import matplotlib.pyplot as plt
 import connection
 
-# Parâmetros do Q-Learning
+# Parametros do Q-Learning
 alpha = 0.1
 gamma = 0.9
 initial_epsilon = 1.0
 min_epsilon = 0.01
 decay_rate = 0.995
 num_episodes = 1000
-max_steps_per_episode = 100
+max_steps_per_episode = 300
 save_interval = 10
 convergence_threshold = 1e-4
 
-# Inicialização da Q-Table
-num_states = 24 * 4  # 24 plataformas * 4 direções possíveis
+# Inicializaçao da Q-Table
+num_states = 24 * 4
 num_actions = 3
 Q = np.zeros((num_states, num_actions))
 
@@ -23,7 +23,7 @@ Q = np.zeros((num_states, num_actions))
 rewards_per_episode = []
 epsilon_values = []
 td_errors_per_episode = []
-rewards_per_step = []  # Adicionando lista para recompensas por passo
+rewards_per_step = [] 
 
 def choose_action(state, epsilon):
     state_index = state_to_index(state)
@@ -47,12 +47,10 @@ def get_initial_state(socket):
     return state
 
 def check_goal_state(state):
-    platform_bits = state[2:7]  # Supondo que os bits 2 a 6 representam a plataforma
-    platform_int = int(platform_bits, 2)  # Converte para inteiro
-    platform_goals = [23, 13]  # Plataformas 23 e 13 em decimal
-    
-    print(f'Plataforma atual (binária): {platform_bits}')
-    print(f'Plataforma atual (inteiro): {platform_int}')
+    platform_bits = state[2:7]  
+    platform_int = int(platform_bits, 2) 
+    platform_goals = [23, 13]  
+    print(f'plataforma atual: {platform_int}')
     
     return platform_int in platform_goals
 
@@ -61,8 +59,8 @@ def save_q_table(Q, filename='q_table.txt'):
 
 def state_to_index(state):
     platform_bits = state[2:7]  # Extrai os 5 bits da plataforma
-    direction_bits = state[-2:]  # Extrai os 2 bits da direção
-    return int(platform_bits + direction_bits, 2)  # Combina plataforma e direção
+    direction_bits = state[-2:]  # Extrai os 2 bits da direçao
+    return int(platform_bits + direction_bits, 2)  # Combina plataforma e direçao
 
 def plot_metrics(episodes, rewards, epsilons, td_errors, rewards_step, interval):
     if not os.path.exists('graficos'):
@@ -82,7 +80,7 @@ def plot_metrics(episodes, rewards, epsilons, td_errors, rewards_step, interval)
     plt.plot(episodes, epsilons, label='Epsilon')
     plt.xlabel('Episódios')
     plt.ylabel('Epsilon')
-    plt.title('Taxa de Exploração')
+    plt.title('Taxa de Exploraçao')
     plt.legend()
     plt.savefig(f'graficos/taxa_de_exploracao_{interval}.png')
 
@@ -106,19 +104,32 @@ def plot_metrics(episodes, rewards, epsilons, td_errors, rewards_step, interval)
     plt.tight_layout()
     plt.close()
 
+def update_results_file(best_result, filename='resultado.txt'):
+    if os.path.exists(filename):
+        with open(filename, 'r') as file:
+            previous_best = float(file.read().strip())
+        if best_result > previous_best:
+            with open(filename, 'w') as file:
+                file.write(f'{best_result}\n')
+    else:
+        with open(filename, 'w') as file:
+            file.write(f'{best_result}\n')
+
 def main():
     socket = connection.connect(port=2037)
     if socket == 0:
-        print("Falha na conexão. Encerrando o programa.")
+        print("Falha na conexao. Encerrando o programa.")
         return
 
     epsilon = initial_epsilon
+    best_result = -np.inf
     for episode in range(num_episodes):
+        print(f'Episódio {episode + 1}')
         state = get_initial_state(socket)
         done = False
         total_td_error = 0
         total_reward = 0
-        episode_rewards = []  # Armazenar recompensas por passo
+        episode_rewards = []
 
         for step in range(max_steps_per_episode):
             if done:
@@ -129,7 +140,8 @@ def main():
             td_error = update_q_table(state, action, reward, next_state)
             total_td_error += td_error
             total_reward += reward
-            episode_rewards.append(reward)  # Adicionar recompensa do passo
+            episode_rewards.append(reward)
+            print(f'Passo {step + 1}: Acao = {action_str}, Recompensa = {reward}')
 
             state = next_state
             if check_goal_state(state):
@@ -138,11 +150,17 @@ def main():
         rewards_per_episode.append(total_reward)
         epsilon_values.append(epsilon)
         td_errors_per_episode.append(total_td_error)
-        rewards_per_step.append(episode_rewards)  # Adicionar recompensas por passo ao final do episódio
+        rewards_per_step.append(episode_rewards)
+
+        print(f'Episódio {episode + 1}: Recompensa Acumulada = {total_reward}, Objetivo Atingido = {"Sim" if done else "Nao"}')
 
         if (episode + 1) % save_interval == 0:
             plot_metrics(range(len(rewards_per_episode)), rewards_per_episode, epsilon_values, td_errors_per_episode, rewards_per_step, episode + 1)
-        
+            update_results_file(best_result, 'resultado.txt')
+
+        if total_reward > best_result:
+            best_result = total_reward
+
         if total_td_error < convergence_threshold:
             print(f"Convergiu após {episode + 1} episódios.")
             break
@@ -152,6 +170,7 @@ def main():
     save_q_table(Q)
     episodes = range(len(rewards_per_episode))
     plot_metrics(episodes, rewards_per_episode, epsilon_values, td_errors_per_episode, rewards_per_step, 'final')
+    update_results_file(best_result, 'resultado.txt')
 
 if __name__ == "__main__":
     main()
