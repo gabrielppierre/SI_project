@@ -1,176 +1,124 @@
-import os
+import connection as cn
 import numpy as np
-import matplotlib.pyplot as plt
-import connection
+import os
+import logging
 
-# Parametros do Q-Learning
-alpha = 0.1
-gamma = 0.9
-initial_epsilon = 1.0
-min_epsilon = 0.01
-decay_rate = 0.995
-num_episodes = 1000
-max_steps_per_episode = 300
-save_interval = 10
-convergence_threshold = 1e-4
+# Configuracao do logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-# Inicializaçao da Q-Table
-num_states = 24 * 4
-num_actions = 3
-Q = np.zeros((num_states, num_actions))
+class QLearningAgent:
+    def __init__(self, alpha=0.7, gamma=0.95, epsilon=0.1, epsilon_decay=0.995, min_epsilon=0.01, actions=None, q_table_filename='resultado.txt', server_port=2037, save_interval=10):
+        """
+        Inicializa o agente Q-Learning com os parâmetros fornecidos.
+        
+        :param alpha: Taxa de aprendizado.
+        :param gamma: Fator de desconto.
+        :param epsilon: Taxa de exploracao inicial.
+        :param epsilon_decay: Taxa de decaimento do epsilon.
+        :param min_epsilon: Valor minimo para epsilon.
+        :param actions: Lista de acoes possiveis.
+        :param q_table_filename: Nome do arquivo da Q-table.
+        :param server_port: Porta do servidor do jogo.
+        :param save_interval: Intervalo de episódios para salvar a Q-table.
+        """
+        self.alpha = alpha
+        self.gamma = gamma
+        self.epsilon = epsilon
+        self.epsilon_decay = epsilon_decay
+        self.min_epsilon = min_epsilon
+        self.actions = actions if actions is not None else ['left', 'right', 'jump']
+        self.q_table_path = os.path.join(os.path.dirname(__file__), q_table_filename)
+        self.server_port = server_port
+        self.save_interval = save_interval
+        self.q_table = self.load_q_table()
+        self.connection = self.connect_to_server()
 
-# Métricas para monitorar o treinamento
-rewards_per_episode = []
-epsilon_values = []
-td_errors_per_episode = []
-rewards_per_step = [] 
+    def connect_to_server(self):
+        """Estabelece conexao com o servidor do jogo."""
+        try:
+            connection = cn.connect(self.server_port)
+            return connection
+        except Exception as e:
+            raise
 
-def choose_action(state, epsilon):
-    state_index = state_to_index(state)
-    if np.random.rand() < epsilon:
-        return np.random.choice([0, 1, 2])  # 0: left, 1: right, 2: jump
-    else:
-        return np.argmax(Q[state_index])
+    def load_q_table(self):
+        """Carrega a Q-table de um arquivo."""
+        try:
+            q_table = np.loadtxt(self.q_table_path)
+            logging.info("Q-table carregada com sucesso.")
+            return q_table
+        except Exception as e:
+            logging.error(f"Erro ao carregar a Q-table: {e}")
+            raise
 
-def update_q_table(state, action, reward, next_state):
-    state_index = state_to_index(state)
-    next_state_index = state_to_index(next_state)
-    best_next_action = np.argmax(Q[next_state_index])
-    td_target = reward + gamma * Q[next_state_index][best_next_action]
-    td_error = td_target - Q[state_index][action]
-    Q[state_index][action] += alpha * td_error
-    return np.abs(td_error)
+    def save_q_table(self):
+        """Salva a Q-table em um arquivo."""
+        try:
+            np.savetxt(self.q_table_path, self.q_table)
+            logging.info("Q-table salva com sucesso.")
+        except Exception as e:
+            logging.error(f"Erro ao salvar a Q-table: {e}")
+            raise
 
-def get_initial_state(socket):
-    initial_action = 'jump'
-    state, _ = connection.get_state_reward(socket, initial_action)
-    return state
+    def choose_action(self, state):
+        """Escolhe uma acao com base na politica epsilon-greedy."""
+        if np.random.rand() < self.epsilon:
+            action = np.random.choice(self.actions)
+            logging.debug(f"Acao escolhida aleatoriamente: {action}")
+        else:
+            action = self.actions[np.argmax(self.q_table[state, :])]
+            logging.debug(f"Acao escolhida pela politica: {action}")
+        return action
 
-def check_goal_state(state):
-    platform_bits = state[2:7]  
-    platform_int = int(platform_bits, 2) 
-    platform_goals = [23, 13]  
-    print(f'plataforma atual: {platform_int}')
-    
-    return platform_int in platform_goals
+    def update_q_table(self, state, action, reward, next_state):
+        """Atualiza a Q-table usando a formula do Q-learning."""
+        action_index = self.actions.index(action)
+        best_next_action = np.max(self.q_table[next_state, :])
+        self.q_table[state, action_index] += self.alpha * (
+            reward + self.gamma * best_next_action - self.q_table[state, action_index]
+        )
+        logging.debug(f"Q-table atualizada para o estado {state} e acao {action}")
 
-def save_q_table(Q, filename='q_table.txt'):
-    np.savetxt(filename, Q, fmt='%.6f')
+    def get_initial_state(self):
+        """Obtem o estado inicial do jogo."""
+        state, reward = cn.get_state_reward(self.connection, "jump")
+        platform = int(state[2:7], 2)
+        direction = int(state[-2:], 2)
+        logging.info(f'Plataforma: {platform}, Sentido: {direction}, Recompensa: {reward}')
+        return int(state, 2), reward
 
-def state_to_index(state):
-    platform_bits = state[2:7]  # Extrai os 5 bits da plataforma
-    direction_bits = state[-2:]  # Extrai os 2 bits da direçao
-    return int(platform_bits + direction_bits, 2)  # Combina plataforma e direçao
+    def train(self):
+        """Loop principal de treinamento do agente."""
+        state, _ = self.get_initial_state()
+        episode_count = 0
+        while True:
+            episode_count += 1
+            
+            # Escolhe a acao baseada na politica epsilon-greedy
+            action = self.choose_action(state)
+            
+            # Executa a acao e obtem o novo estado e recompensa
+            next_state_str, reward = cn.get_state_reward(self.connection, action)
+            next_state = int(next_state_str, 2)
+            platform = int(next_state_str[2:7], 2)
+            direction = int(next_state_str[-2:], 2)
+            logging.info(f'Episodio: {episode_count}, Estado: {next_state}, Recompensa: {reward}, Plataforma: {platform}, Sentido: {direction}')
+            
+            # Atualiza a Q-table com base na acao tomada e a recompensa recebida
+            self.update_q_table(state, action, reward, next_state)
+            
+            # Salva a Q-table a cada X episodios
+            if episode_count % self.save_interval == 0:
+                self.save_q_table()
 
-def plot_metrics(episodes, rewards, epsilons, td_errors, rewards_step, interval):
-    if not os.path.exists('graficos'):
-        os.makedirs('graficos')
-
-    plt.figure(figsize=(16, 6))
-
-    plt.subplot(1, 4, 1)
-    plt.plot(episodes, rewards, label='Recompensa Acumulada')
-    plt.xlabel('Episódios')
-    plt.ylabel('Recompensa Acumulada')
-    plt.title('Recompensa por Episódio')
-    plt.legend()
-    plt.savefig(f'graficos/recompensa_por_eposodio_{interval}.png')
-
-    plt.subplot(1, 4, 2)
-    plt.plot(episodes, epsilons, label='Epsilon')
-    plt.xlabel('Episódios')
-    plt.ylabel('Epsilon')
-    plt.title('Taxa de Exploraçao')
-    plt.legend()
-    plt.savefig(f'graficos/taxa_de_exploracao_{interval}.png')
-
-    plt.subplot(1, 4, 3)
-    plt.plot(episodes, td_errors, label='Erro TD')
-    plt.xlabel('Episódios')
-    plt.ylabel('Erro TD')
-    plt.title('Erro Total de TD por Episódio')
-    plt.legend()
-    plt.savefig(f'graficos/erro_td_por_eposodio_{interval}.png')
-
-    plt.subplot(1, 4, 4)
-    plt.plot(np.concatenate([np.full(max_steps_per_episode, episode) for episode in range(len(rewards_step))]),
-             np.concatenate(rewards_step), label='Recompensas por Passo')
-    plt.xlabel('Passos')
-    plt.ylabel('Recompensa')
-    plt.title('Recompensa por Passo')
-    plt.legend()
-    plt.savefig(f'graficos/recompensa_por_passo_{interval}.png')
-
-    plt.tight_layout()
-    plt.close()
-
-def update_results_file(best_result, filename='resultado.txt'):
-    if os.path.exists(filename):
-        with open(filename, 'r') as file:
-            previous_best = float(file.read().strip())
-        if best_result > previous_best:
-            with open(filename, 'w') as file:
-                file.write(f'{best_result}\n')
-    else:
-        with open(filename, 'w') as file:
-            file.write(f'{best_result}\n')
-
-def main():
-    socket = connection.connect(port=2037)
-    if socket == 0:
-        print("Falha na conexao. Encerrando o programa.")
-        return
-
-    epsilon = initial_epsilon
-    best_result = -np.inf
-    for episode in range(num_episodes):
-        print(f'Episódio {episode + 1}')
-        state = get_initial_state(socket)
-        done = False
-        total_td_error = 0
-        total_reward = 0
-        episode_rewards = []
-
-        for step in range(max_steps_per_episode):
-            if done:
-                break
-            action = choose_action(state, epsilon)
-            action_str = ['left', 'right', 'jump'][action]
-            next_state, reward = connection.get_state_reward(socket, action_str)
-            td_error = update_q_table(state, action, reward, next_state)
-            total_td_error += td_error
-            total_reward += reward
-            episode_rewards.append(reward)
-            print(f'Passo {step + 1}: Acao = {action_str}, Recompensa = {reward}')
-
+            # Atualiza o estado atual
             state = next_state
-            if check_goal_state(state):
-                done = True
 
-        rewards_per_episode.append(total_reward)
-        epsilon_values.append(epsilon)
-        td_errors_per_episode.append(total_td_error)
-        rewards_per_step.append(episode_rewards)
-
-        print(f'Episódio {episode + 1}: Recompensa Acumulada = {total_reward}, Objetivo Atingido = {"Sim" if done else "Nao"}')
-
-        if (episode + 1) % save_interval == 0:
-            plot_metrics(range(len(rewards_per_episode)), rewards_per_episode, epsilon_values, td_errors_per_episode, rewards_per_step, episode + 1)
-            update_results_file(best_result, 'resultado.txt')
-
-        if total_reward > best_result:
-            best_result = total_reward
-
-        if total_td_error < convergence_threshold:
-            print(f"Convergiu após {episode + 1} episódios.")
-            break
-
-        epsilon = max(min_epsilon, epsilon * decay_rate)
-
-    save_q_table(Q)
-    episodes = range(len(rewards_per_episode))
-    plot_metrics(episodes, rewards_per_episode, epsilon_values, td_errors_per_episode, rewards_per_step, 'final')
-    update_results_file(best_result, 'resultado.txt')
+            # Decai o epsilon para reduzir gradualmente a exploracao
+            if self.epsilon > self.min_epsilon:
+                self.epsilon *= self.epsilon_decay
+                logging.debug(f"Epsilon atualizado: {self.epsilon}")
 
 if __name__ == "__main__":
-    main()
+    agent = QLearningAgent(save_interval=10)
+    agent.train()
